@@ -13,7 +13,7 @@ No `.syx`/`.bin` firmware is included, and none ever needs to be.
 | | |
 |---|---|
 | **host OS** | **Linux only.** The ALSA backend is what was exercised end to end; the `mido` path for macOS/Windows is provided but **untested against hardware**. |
-| **models** | **Carbon 8 `1-1` on Cobalt 8** — verified. **Argon 8 `3-2` on Cobalt 8** — verified. |
+| **models** | **Carbon 8 `1-1` on Cobalt 8** — verified. **Argon 8 `3-2` on Cobalt 8** — verified. **Carbon 8 `1-1` on Argon 8** — patch available, **not yet verified on hardware**. |
 | **result** | a Cobalt 8 accepted all three components on the first pass (**~3½ minutes**) and booted running Carbon 8 or Argon 8 firmware. |
 
 Only the three application components are ever written — the bootloader is never touched.
@@ -41,14 +41,15 @@ Only the three application components are ever written — the bootloader is nev
 
 | component | change |
 |---|---|
-| panel | packet **model byte** `0x1D → 0x19` (Carbon) / `0x18 → 0x19` (Argon) on every packet, **plus one instruction**: the model‑gate compare immediate, then the packet is re‑sealed |
+| panel | packet **model byte** set to the target's on every packet (`0x19` Cobalt, `0x18` Argon), **plus one instruction**: the model‑gate compare immediate, then the packet is re‑sealed |
 | master | packet **model byte** only (payload untouched) |
 | slave | packet **model byte** only (payload untouched) |
 
-The model byte goes to `0x19` because the Cobalt bootloader requires it.
+The model byte must be the one the target unit's bootloader reports (`0x19` Cobalt, `0x18` Argon);
+the flashers read it from the bootloader and refuse a set built for a different model.
 
 ### Protocol reframing (Argon 8)
-Official Argon 8 v3.2 firmware uses Modal's legacy **165-byte SysEx data packet format** with an 8-bit checksum. The Cobalt 8 bootloader strictly expects modern **167-byte SysEx packets** with a 16-bit checksum (as used in Cobalt 8 and Carbon 8). When patching Argon 8 for Cobalt 8, `patcher.py` automatically reframes every data packet to the 167-byte format and recalculates the full 16-bit integrity value so the Cobalt bootloader accepts all three components without stalling.
+Official Argon 8 v3.2 firmware uses Modal's legacy **165-byte SysEx data packet format** with an 8-bit checksum. The Cobalt 8 bootloader strictly expects modern **167-byte SysEx packets** with a 16-bit checksum (as used in Cobalt 8 and Carbon 8). `patcher.py` rewrites every data packet in the target bootloader's native format and recomputes its checksum: Argon → Cobalt is reframed 165 → 167, Carbon → Argon 167 → 165. The payload itself is unchanged.
 
 ### The panel model gate
 The single panel instruction is the firmware's own "does the unit's model match my model?" check; patching it makes the source panel accept a `0x19` unit:
@@ -57,6 +58,12 @@ The single panel instruction is the firmware's own "does the unit's model match 
 |---|---|---|---|
 | Carbon 8 `1-1` | `cmp r3,#0x1d` (VMA `0x437EDA`) | `cmp r3,#0x19` | byte 102: `0x1D → 0x19` |
 | Argon 8 `3-2` | `cmp r3,#0xff` (VMA `0x438F3C`) | `cmp r3,#0x19` | byte 68: `0x7F → 0x19`, byte 71 (MSB bundle): `0x44 → 0x40` |
+| Carbon 8 `1-1` → **Argon 8** | `cmp r3,#0x1d` (VMA `0x437EDA`) | `cmp r3,#0xff` | byte 102: `0x1D → 0x7F`, byte 103 (MSB bundle): `0x40 → 0x41` |
+
+The value compared is byte 12 of the unit's identity block (read through the flash controller),
+not the SysEx model byte. Cobalt units hold `0x19` there; Argon units hold `0xFF` (the stock
+Argon panel compares against `0xFF`), which is why the Carbon → Argon gate becomes `0xff`
+rather than `0x18`.
 
 ---
 
@@ -92,6 +99,9 @@ verification, troubleshooting and recovery.
 
    # Carbon 8 on Cobalt 8:
    python3 -m crossflash8.patcher --patches patches/carbon8_1-1_to_cobalt8.json --from /path/to/official/syx --out ./out
+
+   # Carbon 8 on Argon 8 (not yet verified on hardware):
+   python3 -m crossflash8.patcher --patches patches/carbon8_1-1_to_argon8.json --from /path/to/official/syx --out ./out
    ```
 
 2. **Put synth into UPDATE mode:**
@@ -109,7 +119,7 @@ verification, troubleshooting and recovery.
    ```
    Takes **~3½ minutes** total. The unit reboots itself automatically when all 3 components are written.
 
-To revert to stock Cobalt 8 at any time: put the synth into UPDATE mode (step 2) and serve your official unmodified Cobalt files (`python3 -m crossflash8.flash_alsa --dir /path/to/cobalt/syx --pace-ms 20`).
+To revert to stock at any time: put the synth into UPDATE mode (step 2) and serve your official unmodified files for the unit's own model (`python3 -m crossflash8.flash_alsa --dir /path/to/stock/syx --pace-ms 20`).
 
 ### Windows
 
@@ -137,9 +147,10 @@ to the Linux path, but nobody has run this against a unit yet.*
 
 ## Reverting to stock
 
-The **bootloader is never modified**, so recovery is the same procedure with the official
-Cobalt set: put the unit in update mode and serve `Cobalt8_panel/master/slave` (headers
-`0x19`, no edits). Nothing in this repo is needed to go back.
+The **bootloader is never modified**, so recovery is the same procedure with the unit's own
+official set: put the unit in update mode and serve `Cobalt8_panel/master/slave` (headers
+`0x19`) on a Cobalt, or `Argon8_panel/master/slave` (headers `0x18`) on an Argon — no edits.
+Nothing in this repo is needed to go back.
 
 Note on identity: while the patched firmware is **running**, the unit presents as the
 cross‑flashed model (its USB‑audio card name and its reported model byte both change), which
@@ -159,6 +170,7 @@ crossflash8/
 patches/
   carbon8_1-1_to_cobalt8.json
   argon8_3-2_to_cobalt8.json
+  carbon8_1-1_to_argon8.json
 docs/
   USING.md        # complete operational guide: setup -> patch -> flash -> verify -> recover
   SCOPE.md        # what the project is, and what it will never include
@@ -174,5 +186,16 @@ found by locating the `Incorrect Firmware (%02Xh)` splash strings, the flag lite
 read, and the single function that sets that flag after reading the unit's model byte
 (`ldrb` from the master‑link struct). Worked examples:
 `patches/carbon8_1-1_to_cobalt8.json` (verified) and `patches/argon8_3-2_to_cobalt8.json`
-(verified). To add a revision: locate its gate,
+(verified); `patches/carbon8_1-1_to_argon8.json` targets an Argon unit. To add a revision: locate its gate,
 verify on hardware, then add a JSON entry with the source files' SHA‑256.
+
+## Technical notes (for contributors)
+
+* The updated image is **not** a flat dump: each data packet's payload unpacks to 133 bytes,
+  of which the first **128 are image bytes** (5 bytes of padding follow), and the app is linked
+  at base **`0x00410000`**.
+  Knowing this is what makes the string/pointer tables resolve.
+* The per‑packet integrity value is a **non‑cryptographic** checksum of the payload; any
+  payload edit must re‑seal the packet (the patcher does this).
+* `20 ms` per message is required; `1 ms` fails with "missed firmware start packet".
+

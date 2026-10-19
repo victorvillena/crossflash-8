@@ -4,11 +4,14 @@ Implements the reverse-engineered update handshake:
 
     host -> dev   identify   F0 00 21 07 64 01 01 F7
     dev  -> host             F0 00 21 07 <model> 01 7D 00 04 01 01 F7
-    host -> dev   start      F0 00 21 07 19 01 04 01 F7
-    dev  -> host  request    F0 00 21 07 19 7C <type> F7      0=panel 1=master 2=slave
+    host -> dev   start      F0 00 21 07 <model> 01 04 01 F7
+    dev  -> host  request    F0 00 21 07 <model> 7C <type> F7      0=panel 1=master 2=slave
     host -> dev   image      the component's .syx, split on F7
     dev  -> host  progress   CC#127 = 0x78 (received) then 0x77 (installed)
     dev   reboots after all three are served
+
+<model> is what the bootloader reports (0x19 Cobalt, 0x18 Argon, ...); the set being
+served must carry the same model byte, or the flasher refuses before writing anything.
 
 20 ms per message is the sweet spot: faster causes "missed firmware start packet".
 """
@@ -23,7 +26,6 @@ import time
 from . import syx
 
 IDENTIFY = bytes([0xF0, 0x00, 0x21, 0x07, 0x64, 0x01, 0x01, 0xF7])
-MODEL = 0x19
 NAMES = {0: "panel", 1: "master", 2: "slave"}
 
 
@@ -79,6 +81,7 @@ class Session:
         self.runs: dict[int, int] = {}
         self.pending: int | None = None
         self.saw_hello = False
+        self.model: int | None = None
 
     def feeds(self, data: bytes):
         self.buf += data
@@ -120,10 +123,11 @@ class Session:
                 self.pending = m[6]
             elif len(m) >= 7 and m[5] == 0x01 and m[6] == 0x7D:
                 self.saw_hello = True
+                self.model = m[4]
             elif len(m) >= 8 and m[5] == 0x7D:
                 print(f"        DEVICE ERROR {m[6]} (state {m[7]})")
-            elif len(m) >= 7 and m[5] == 0x01 and m[6] == 0x02:
-                wwrite(self.fd, bytes([0xF0, 0x00, 0x21, 0x07, MODEL, 0x01, 0x04, 0x01, 0xF7]))
+            elif len(m) >= 7 and m[5] == 0x01 and m[6] == 0x02 and self.model is not None:
+                wwrite(self.fd, bytes([0xF0, 0x00, 0x21, 0x07, self.model, 0x01, 0x04, 0x01, 0xF7]))
 
     def pump(self, sec: float, stop_on_request: bool = True) -> None:
         end = time.time() + sec
@@ -179,8 +183,13 @@ def flash(src: str, pace_ms: float = 20.0, total: float = 600.0) -> int:
             sys.exit("device did not answer the update handshake — put it in UPDATE mode "
                      "(power on holding SHIFT/INIT until it says 'waiting for MODALapp "
                      "connection') and retry")
-        print("device is in update mode")
-        wwrite(fd, bytes([0xF0, 0x00, 0x21, 0x07, MODEL, 0x01, 0x04, 0x01, 0xF7]))
+        set_models = {m[4] for img in images.values() for m in img}
+        if set_models != {s.model}:
+            sys.exit(f"the bootloader reports model {s.model:#04x} but the set in {src} is built "
+                     f"for {', '.join(f'{x:#04x}' for x in sorted(set_models))}; refusing to flash. "
+                     f"Use the patch file whose target matches this unit.")
+        print(f"device is in update mode (model {s.model:#04x})")
+        wwrite(fd, bytes([0xF0, 0x00, 0x21, 0x07, s.model, 0x01, 0x04, 0x01, 0xF7]))
         deadline = time.time() + total
         while time.time() < deadline and len(s.served) < len(images):
             s.pump(0.05, stop_on_request=False)

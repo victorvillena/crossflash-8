@@ -1,0 +1,53 @@
+{
+  "format": "crossflash-8-patch/1",
+  "description": "Make official Modal Carbon 8 firmware boot on an Argon 8 (model id 0x18) unit.",
+  "provenance": {
+    "source_images": "Official Modal Electronics firmware files, supplied by the user. Not included in this repository and not obtainable through it.",
+    "verified_on": "NOT YET VERIFIED ON HARDWARE. Built from static analysis of the Carbon 8 1-1 and Argon 8 3-2 images.",
+    "confirmed": "Pending: an Argon 8 unit booting this set has not been observed yet."
+  },
+  "target_model_byte": 24,
+  "target_model_name": "Argon8 (0x18)",
+  "files": [
+    {
+      "role": "panel",
+      "filename": "Carbon8_panel_1-1.syx",
+      "sha256": "2fa49b6482395d28b985ad40acb8607a4d7c9510f070a76223892cc30ea771de",
+      "edits": [
+        {
+          "data_packet": 1277,
+          "payload_index": 102,
+          "value": 127,
+          "reseal": false,
+          "what": "cmp r3,#0x1d -> cmp r3,#0xff (model gate operand low 7 bits). VMA 0x437EDA"
+        },
+        {
+          "data_packet": 1277,
+          "payload_index": 103,
+          "value": 65,
+          "reseal": true,
+          "what": "cmp r3,#0x1d -> cmp r3,#0xff (set bit 0 in MSB bundle byte so operand is 0xff, not 0x7f)"
+        }
+      ]
+    },
+    {
+      "role": "master",
+      "filename": "Carbon8_master_1-1.syx",
+      "sha256": "24db527977d232f79466292cb40ff60461e406040e673d385da1739f8484d12b",
+      "edits": []
+    },
+    {
+      "role": "slave",
+      "filename": "Carbon8_slave_1-1.syx",
+      "sha256": "073babb693d7b50d50285b98a8721dc9da3d48e1abdb2109c2980c80459059aa",
+      "edits": []
+    }
+  ],
+  "notes": [
+    "The gate immediate is 0xff, not 0x18: the panel reads the unit's model from byte 12 of a 128-byte block fetched through the flash controller (0x400E0A00), and the stock Argon 3-2 panel only accepts 0xff there (cmp r3,#0xff at VMA 0x438F3C). Argon units therefore report 0xff; 0x18 is only the model byte in the SysEx packet header.",
+    "The Argon bootloader's native framing is the legacy 165-byte data packet with an 8-bit checksum (as in the official Argon 3-2 files), so the patcher reframes Carbon's 167-byte packets to 165 bytes. Payloads are unchanged.",
+    "Only the packet model byte (and framing) changes on master/slave; their payloads are untouched (no model check found in either image).",
+    "Every Carbon 1-1 image is smaller than its Argon 3-2 counterpart (panel 0x3CD80 vs 0x46E00, master 0x74E00 vs 0x76F80, slave 0x5E980 vs 0x89B00 bytes).",
+    "Carbon 8 firmware revision 1-1 only; other revisions have a different layout and are deliberately refused by the SHA-256 gate."
+  ]
+}

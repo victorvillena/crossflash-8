@@ -4,7 +4,9 @@
     python -m crossflash8.flash_mido --dir ./out
 
 Same protocol/pacing as the ALSA backend: identify -> start -> serve each component
-the bootloader requests, 20 ms per message, answering re-requests immediately.
+the bootloader requests, 20 ms per message, answering re-requests immediately.  The
+start message uses the model byte the bootloader reports, and a set built for another
+model is refused before anything is written.
 """
 from __future__ import annotations
 import argparse
@@ -15,7 +17,6 @@ import time
 from . import syx
 
 IDENTIFY = [0x00, 0x21, 0x07, 0x64, 0x01, 0x01]      # payload without F0 .. F7
-MODEL = 0x19
 NAMES = {0: "panel", 1: "master", 2: "slave"}
 
 
@@ -50,9 +51,10 @@ def flash(src: str, pace_ms: float = 20.0, total: float = 600.0) -> int:
     runs: dict[int, int] = {}
     pending = None
     saw_hello = False
+    model = None
 
     def handle(msg) -> None:
-        nonlocal pending, saw_hello
+        nonlocal pending, saw_hello, model
         if msg.type != "sysex":
             return
         m = _sysex(msg)
@@ -62,6 +64,7 @@ def flash(src: str, pace_ms: float = 20.0, total: float = 600.0) -> int:
             pending = m[6]
         elif len(m) >= 7 and m[5] == 0x01 and m[6] == 0x7D:
             saw_hello = True
+            model = m[4]
         elif len(m) >= 8 and m[5] == 0x7D:
             print(f"        DEVICE ERROR {m[6]} (state {m[7]})")
 
@@ -87,8 +90,13 @@ def flash(src: str, pace_ms: float = 20.0, total: float = 600.0) -> int:
             sys.exit("device did not answer the update handshake — put it in UPDATE mode "
                      "(power on holding SHIFT/INIT until it says 'waiting for MODALapp "
                      "connection') and retry")
-        print("device is in update mode")
-        port.send(mido.Message("sysex", data=[0x00, 0x21, 0x07, MODEL, 0x01, 0x04, 0x01]))
+        set_models = {m[4] for img in images.values() for m in img}
+        if set_models != {model}:
+            sys.exit(f"the bootloader reports model {model:#04x} but the set in {src} is built "
+                     f"for {', '.join(f'{x:#04x}' for x in sorted(set_models))}; refusing to flash. "
+                     f"Use the patch file whose target matches this unit.")
+        print(f"device is in update mode (model {model:#04x})")
+        port.send(mido.Message("sysex", data=[0x00, 0x21, 0x07, model, 0x01, 0x04, 0x01]))
         deadline = time.time() + total
         while time.time() < deadline and len(served) < len(images):
             for msg in port.iter_pending():

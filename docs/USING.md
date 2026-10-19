@@ -19,7 +19,8 @@ git clone <this repo> && cd crossflash-8
 python3 -m crossflash8.patcher \
     --patches patches/carbon8_1-1_to_cobalt8.json \
     --from /path/to/your/official/syx --out ./out
-#    (or patches/argon8_3-2_to_cobalt8.json for Argon 8 3-2 source files)
+#    (or patches/argon8_3-2_to_cobalt8.json for Argon 8 3-2 source files,
+#     or patches/carbon8_1-1_to_argon8.json to put Carbon 8 1-1 on an Argon 8 unit)
 
 # 2. power the synth OFF, hold SHIFT/INIT, power ON
 #    screen should read:  UPDATE / waiting for MODALapp connection
@@ -37,8 +38,8 @@ The rest of this document explains those steps, and how to tell success from fai
 
 | | |
 |---|---|
-| **verified so far** | **Linux host + Cobalt 8 unit + Carbon 8 `1‑1` firmware** AND **Argon 8 `3‑2` firmware** — both verified on hardware. Every other combination (macOS/Windows host, Cobalt 8X) is **untested** — see §2 |
-| **the synth** | the target unit — e.g. a Cobalt 8 / 8X |
+| **verified so far** | **Linux host + Cobalt 8 unit + Carbon 8 `1‑1` firmware** AND **Argon 8 `3‑2` firmware** — both verified on hardware. Every other combination (macOS/Windows host, Cobalt 8X, **Carbon 8 on an Argon 8 unit**) is **untested** — see §2 |
+| **the synth** | the target unit — e.g. a Cobalt 8 / 8X, or an Argon 8 |
 | **USB cable** | a **data** cable (not charge‑only); a direct port is preferred over an unpowered hub |
 | **computer** | Linux, macOS or Windows |
 | **Python** | **3.8 or newer** — see §3 for the recommended version per OS |
@@ -192,6 +193,23 @@ master: wrote ./out/Argon8_master_3-2.syx
 slave : set model byte on 4408 packets -> 0x19
 slave : wrote ./out/Argon8_slave_3-2.syx
 ```
+
+With the Carbon → Argon patch (`patches/carbon8_1-1_to_argon8.json` + Carbon 8 `1-1` files) every
+data packet is also rewritten in the Argon bootloader's legacy 165‑byte format, and the gate
+immediate becomes `0xff` (what an Argon unit reports), set across two payload bytes:
+
+```
+panel : reframed 167-byte data packets to 165-byte (target bootloader format), model byte -> 0x18
+panel : packet 1277 payload[102] 0x1d -> 0x7f  (cmp r3,#0x1d -> cmp r3,#0xff (model gate operand low 7 bits). VMA 0x437EDA)
+panel : packet 1277 payload[103] 0x40 -> 0x41  (cmp r3,#0x1d -> cmp r3,#0xff (set bit 0 in MSB bundle byte so operand is 0xff, not 0x7f))
+panel : wrote ./out/Carbon8_panel_1-1.syx
+master: reframed 167-byte data packets to 165-byte (target bootloader format), model byte -> 0x18
+master: wrote ./out/Carbon8_master_1-1.syx
+slave : reframed 167-byte data packets to 165-byte (target bootloader format), model byte -> 0x18
+slave : wrote ./out/Carbon8_slave_1-1.syx
+```
+
+This combination has **not been verified on hardware yet**.
 
 ### The SHA‑256 gate
 
@@ -358,7 +376,10 @@ come up.
   ```
 
   The same request sent to the **bootloader** (update mode) answers with the stock model byte
-  (`0x19`) and its `7D` handshake — which is exactly how the flasher confirms it is safe to write.
+  (`0x19` Cobalt, `0x18` Argon) and its `7D` handshake — which is exactly how the flasher confirms
+  it is safe to write. The flasher also checks that this model byte matches the one in the set
+  it is about to serve, and refuses (writing nothing) if you point a Cobalt‑targeted set at an
+  Argon or vice versa.
 
 If the unit boots and plays, you're done. If it doesn't, see below — it is recoverable.
 

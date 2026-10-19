@@ -3,17 +3,16 @@
 Packet framing (as produced by the official updater):
 
     start : F0 00 21 07 <MODEL> 00 <CHIP> 7F <cntL> <cntM> F7
-    data  : F0 00 21 07 <MODEL> 00 <CHIP> 00 <idxL> <idxM> <payload155> <h> F7
+    data  : F0 00 21 07 <MODEL> 00 <CHIP> 00 <idxL> <idxM> <payload152> <cs nibbles> F7
     end   : F0 00 21 07 <MODEL> 00 <CHIP> 7E F7
 
-MODEL is a single byte at offset 4 of every packet.
-The byte before the terminating F7 of a data packet is the *high nibble* of an
-integrity value computed from the payload only; the low nibble lives in the
-low bits of the last payload byte.  It is a non-cryptographic checksum:
+MODEL is a single byte at offset 4 of every packet.  The payload is 19 groups of
+7 bytes packed 8-for-7 (MSB bundle last); the first 128 unpacked bytes of each
+packet are image bytes, the remaining 5 are padding.  The nibbles after the
+payload are a non-cryptographic checksum of the unpacked payload:
 
-    cs = sum(unpack(payload)) & 0xFF
-    h  = cs >> 4
-    last_payload_byte = (last_payload_byte & 0x70) | (cs & 0x0F)
+    legacy (165 bytes, Argon):        cs = sum & 0xFF    -> cs[3:0], cs[7:4]
+    modern (167 bytes, Cobalt/Carbon): cs = sum & 0xFFFF -> cs[11:8], cs[15:12], cs[3:0], cs[7:4]
 
 Editing a payload byte therefore requires re-sealing that packet.
 """
@@ -93,29 +92,29 @@ def set_model_byte(packets: list[bytearray], model: int) -> int:
     return n
 
 
-def reframe_to_modern(packets: list[bytearray], target_model: int = 0x19) -> list[bytearray]:
-    """Upgrade legacy 165-byte data packets (Argon) to modern 167-byte format with 16-bit checksum (Cobalt/Carbon)."""
+# Data-packet length each model's bootloader takes, as found in that model's official files:
+# Argon uses the legacy 165-byte packet (8-bit checksum), Cobalt/Carbon the 167-byte one (16-bit).
+NATIVE_DATA_LEN = {0x18: 165, 0x19: 167, 0x1D: 167}
+
+
+def data_len(packets: list[bytearray]) -> int | None:
+    return next((len(p) for p in packets if packet_is_data(p)), None)
+
+
+def reframe(packets: list[bytearray], target_len: int, target_model: int) -> list[bytearray]:
+    """Rewrite every data packet as `target_len` bytes (165 legacy / 167 modern) with a fresh
+    checksum, and set the model byte on every packet.  The 152-byte payload is unchanged."""
+    if target_len not in (165, 167):
+        raise ValueError(f"unknown data packet length {target_len}")
     out = []
     for p in packets:
-        if packet_is_data(p) and len(p) == 165:
-            hdr = bytearray(p[:10])
-            hdr[4] = target_model
-            payload = bytearray(p[10:162])
-            unp = unpack(bytes(payload))
-            cs = sum(unp) & 0xFFFF
-            reframed = hdr + payload + bytearray([
-                (cs >> 8) & 0x0F,
-                (cs >> 12) & 0x0F,
-                cs & 0x0F,
-                (cs >> 4) & 0x0F,
-                0xF7,
-            ])
-            out.append(reframed)
-        else:
-            q = bytearray(p)
-            if len(q) > 4:
-                q[4] = target_model
-            out.append(q)
+        q = bytearray(p)
+        if len(q) > 4:
+            q[4] = target_model
+        if packet_is_data(q) and len(q) != target_len:
+            q = q[:162] + bytearray(target_len - 163) + b"\xF7"
+            reseal(q)
+        out.append(q)
     return out
 
 

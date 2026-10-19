@@ -47,9 +47,12 @@ def apply_file(src: str, spec: dict, out_dir: str) -> str:
 
     model = spec.get("model_byte")
     if model is not None:
-        if model == 0x19 and any(len(p) == 165 for p in packets if syx.packet_is_data(p)):
-            packets = syx.reframe_to_modern(packets, model)
-            print(f"  {spec['role']:6}: upgraded 165-byte legacy packets to 167-byte Cobalt format (model {model:#04x})")
+        have = syx.data_len(packets)
+        want = syx.NATIVE_DATA_LEN.get(model, have)
+        if have != want:
+            packets = syx.reframe(packets, want, model)
+            print(f"  {spec['role']:6}: reframed {have}-byte data packets to {want}-byte "
+                  f"(target bootloader format), model byte -> {model:#04x}")
         else:
             n = syx.set_model_byte(packets, model)
             print(f"  {spec['role']:6}: set model byte on {n} packets -> {model:#04x}")
