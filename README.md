@@ -1,8 +1,8 @@
 # crossflash-8
 
-Run **Carbon 8** firmware on a **Cobalt 8 / 8X** unit over USB‑MIDI — **without shipping a
-single byte of Modal Electronics' firmware**. The same technique extends to the other 8‑series
-models (see *Adding other models*).
+Intended for Modal Electronics 8-series models. The patcher tool allows to patch a firmware
+so that it can be flashed in a different model (e.g. Carbon firmware on Cobalt). Not every 
+combination is covered (see *Adding other models*).
 
 This repository contains **only tooling**: a patcher that applies a handful of byte edits
 to firmware files *you* already have, and a flasher that talks to the synth's bootloader.
@@ -12,9 +12,8 @@ No `.syx`/`.bin` firmware is included, and none ever needs to be.
 
 | | |
 |---|---|
-| **host OS** | **Linux only.** The ALSA backend is what was exercised end to end; the `mido` path for macOS/Windows is provided but **untested against hardware**. |
-| **models** | **Carbon 8 `1-1` on Cobalt 8** — verified. **Argon 8 `3-2` on Cobalt 8** — verified. **Carbon 8 `1-1` on Argon 8** — patch available, **not yet verified on hardware**. |
-| **result** | a Cobalt 8 accepted all three components on the first pass (**~3½ minutes**) and booted running Carbon 8 or Argon 8 firmware. |
+| **host OS** | **Linux only.** The ALSA backend is what was exercised end to end; the `mido` path for macOS/Windows is provided and has been tested on macOS. |
+| **models** | **Carbon 8 `1-1` on Cobalt 8** — verified. **Argon 8 `3-2` on Cobalt 8** — verified. **Carbon 8 `1-1` on Argon 8** — verified. |
 
 Only the three application components are ever written — the bootloader is never touched.
 
@@ -92,29 +91,33 @@ verification, troubleshooting and recovery.
 
 ### TL;DR (3-Step Quickstart)
 
-1. **Patch your official source firmware into `./out`:**
+1. **Use the patcher tool to patch your firmware:**
+
+   In this example the firmware files are written to the `./out` directory.
    ```bash
    # Argon 8 on Cobalt 8:
-   python3 -m crossflash8.patcher --patches patches/argon8_3-2_to_cobalt8.json --from /path/to/official/syx --out ./out
+   python3 -m crossflash8.patcher --patches patches/argon8_3-2_to_cobalt8.json --from /path/to/argon/firmware --out ./out
 
    # Carbon 8 on Cobalt 8:
-   python3 -m crossflash8.patcher --patches patches/carbon8_1-1_to_cobalt8.json --from /path/to/official/syx --out ./out
+   python3 -m crossflash8.patcher --patches patches/carbon8_1-1_to_cobalt8.json --from /path/to/carbon/firmware --out ./out
 
-   # Carbon 8 on Argon 8 (not yet verified on hardware):
-   python3 -m crossflash8.patcher --patches patches/carbon8_1-1_to_argon8.json --from /path/to/official/syx --out ./out
+   # Carbon 8 on Argon 8:
+   python3 -m crossflash8.patcher --patches patches/carbon8_1-1_to_argon8.json --from /path/to/carbon/firmware --out ./out
    ```
 
-2. **Put synth into UPDATE mode:**
+3. **Put synth into UPDATE mode:**
    * Power **OFF** the synth.
-   * Hold **SHIFT / INIT** and power **ON** (screen reads: `UPDATE / waiting for MODALapp connection`).
+   * Hold **SHIFT / INIT** and power **ON**. On the recovery menu, press and hold the knob
+     to the left of the screen to select the UPDATE option (screen reads: `UPDATE / waiting for MODALapp connection`).
 
-3. **Flash over USB-MIDI:**
+4. **Use the flashing tool to transfer the firmware:**
    ```bash
    # Linux (ALSA, no dependencies) — verified on hardware:
    python3 -m crossflash8.flash_alsa --dir ./out
 
    # macOS / Windows (mido backend):
-   pip install mido python-rtmidi
+   python3 -m venv .venv && . .venv/bin/activate
+   python3 -m pip install mido python-rtmidi
    python3 -m crossflash8.flash_mido --dir ./out
    ```
    Takes **~3½ minutes** total. The unit reboots itself automatically when all 3 components are written.
