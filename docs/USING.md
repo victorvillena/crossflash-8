@@ -26,8 +26,8 @@ python3 -m crossflash8.patcher \
 #    screen should read:  UPDATE / waiting for MODALapp connection
 
 # 3. flash
-python3 -m crossflash8.flash_alsa --dir ./out --pace-ms 20   # Linux
-python3 -m crossflash8.flash_mido --dir ./out --pace-ms 20   # macOS / Windows / Linux
+python3 -m crossflash8.flash_alsa --dir ./out   # Linux
+python3 -m crossflash8.flash_mido --dir ./out   # macOS / Windows / Linux
 ```
 
 The rest of this document explains those steps, and how to tell success from failure.
@@ -269,35 +269,42 @@ straightforward.
 
 ```bash
 # Linux
-python3 -m crossflash8.flash_alsa --dir ./out --pace-ms 20
+python3 -m crossflash8.flash_alsa --dir ./out
 
 # macOS / Windows / Linux
-python3 -m crossflash8.flash_mido --dir ./out --pace-ms 20
+python3 -m crossflash8.flash_mido --dir ./out
 ```
 
-You should see something like this (annotated transcript from the verified Linux/ALSA run):
+You should see something like this (the verified Linux/ALSA run, annotated):
 
 ```
 port hw:3,0,0 (/dev/snd/midiC3D0)                             <- port found
-[    0.0] dev F0 00 21 07 19 01 7D 00 04 01 01 F7             <- bootloader handshake
-device is in update mode
-[    0.5] dev F0 00 21 07 19 7C 02 F7                         <- device requests component 2 (slave)
+[    0.0] dev bootloader handshake
+device is in update mode (model 0x19); 8720 msgs to send
+[    0.5] dev requests slave                                  <- the device picks the order
 [    0.6] ==> sending slave (3029 msgs @ 20 ms)
-[   61.4] <== slave sent
-[   61.4] dev CC #127 = 0x78                                  <- device begins programming
-[  101.2] dev CC #127 = 0x77                                  <- done
-[  101.3] dev F0 00 21 07 19 7C 01 F7                         <- requests component 1 (master)
+[   61.4] <== slave sent in 1:01
+[   61.4] dev CC #127 = 0x78 (programming)
+[  101.2] dev CC #127 = 0x77 (done)
+[  101.3] dev requests master
 [  101.3] ==> sending master (3742 msgs @ 20 ms)
-[  176.5] <== master sent
-[  176.5] dev CC #127 = 0x78
-[  179.5] dev CC #127 = 0x77
-[  179.5] dev CC #127 = 0x78
-[  181.7] dev F0 00 21 07 19 7C 00 F7                         <- requests component 0 (panel)
-[  181.8] ==> sending panel (1949 msgs @ 20 ms)
-[  220.9] <== panel sent
-[  220.9] dev CC #127 = 0x77
-finished. served [0, 1, 2] runs={2: 1, 1: 1, 0: 1}
+master [######..........]  41% 1534/3742 | total  52% | 2:12 elapsed ~1:28 left
 ```
+
+The last line is a live status line, redrawn in place: progress through the current
+component, overall progress (messages sent out of all three components), time elapsed and
+an estimate of the time left. While the device is programming between components it reads
+`slave  sent, device working 0:12 | …` instead. On success it disappears and the run ends with
+
+```
+[  220.9] <== panel sent in 0:39
+[  220.9] dev CC #127 = 0x77 (done)
+finished in 3:41. served [0, 1, 2] runs={2: 1, 1: 1, 0: 1}
+```
+
+When the output is piped or redirected to a file, the status line is printed as an ordinary
+line every 10 % of each component instead. Add `-v` to also print the raw bytes of every
+device message.
 
 What matters:
 
@@ -305,6 +312,9 @@ What matters:
   panel); the flasher answers, then waits for the next request. You never choose the order.
 * **`CC #127` messages are the device's own progress/status output.** `0x78`/`0x77` pairs
   indicate programming activity and completion. They are normal.
+* **The time estimate is approximate.** Sending time is measured as it goes; the device's
+  programming time (~40 s after the slave, a few seconds after the master) is a typical value
+  from the verified run, so expect the estimate to jump a little between components.
 * **`runs=` shows retries.** `{2: 1, 1: 1, 0: 1}` means each component was sent exactly once.
   If the loader re‑requests one, the flasher re‑sends it immediately and the count rises — it
   does not treat that as an error.
@@ -391,7 +401,7 @@ If the unit boots and plays, you're done. If it doesn't, see below — it is rec
 |---|---|---|
 | `no Modal 8-series sound card found` | synth not in update mode, cable is charge‑only, or a hub/USB problem | re‑enter update mode (§6), try a direct port and another cable |
 | `device did not answer the update handshake` | the *application* is running, not the bootloader | power‑cycle holding **SHIFT/INIT** — this refusal is the guard working |
-| `DEVICE ERROR 9 (state …)` | timed out: pacing too fast, or something else is reading the port | close MIDI apps, keep `--pace-ms 20` or raise to 25–30, retry |
+| `DEVICE ERROR 9 (state …)` | timed out: pacing too fast, or something else is reading the port | close MIDI apps, keep the default pacing (20 ms) or raise with `--pace-ms 25`–`30`, retry |
 | `DEVICE ERROR 10 …` | "missed firmware start packet" — pacing too fast (1 ms reliably fails) | use ≥ `--pace-ms 20` |
 | `DEVICE ERROR 11 …` | second‑stage timeout | retry from update mode; raise pacing if it repeats |
 | flasher exits non‑zero, `served` is missing a component | incomplete run (port contention, hub glitch) | re‑enter update mode and run it again; partial writes are simply overwritten |
@@ -413,7 +423,7 @@ The **bootloader is never written**, so recovery is the ordinary procedure with 
    same flasher:
 
    ```bash
-   python3 -m crossflash8.flash_alsa --dir /path/to/stock/cobalt/syx --pace-ms 20
+   python3 -m crossflash8.flash_alsa --dir /path/to/stock/cobalt/syx
    ```
 
 Nothing from this repository is required to go back — and no patched file is involved in a
@@ -500,7 +510,7 @@ producing a brick.
 Open an issue with:
 
 * your OS and Python version (`python3 -V`),
-* the flasher output **including the `[  time]` lines and any `DEVICE ERROR`**,
+* the flasher output, ideally run with `-v`, **including the `[  time]` lines and any `DEVICE ERROR`**,
 * which stage it stopped at and what the synth's screen showed,
 * whether you're using `flash_alsa` or `flash_mido`.
 

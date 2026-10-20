@@ -24,6 +24,7 @@ import sys
 import time
 
 from . import syx
+from .progress import Progress, cc_text, fmt_secs
 
 IDENTIFY = bytes([0xF0, 0x00, 0x21, 0x07, 0x64, 0x01, 0x01, 0xF7])
 NAMES = {0: "panel", 1: "master", 2: "slave"}
@@ -71,12 +72,14 @@ def wwrite(fd: int, data: bytes) -> None:
 
 # ------------------------------------------------------------------- protocol
 class Session:
-    def __init__(self, fd: int, images: dict[int, list[bytes]], pace_ms: float):
+    def __init__(self, fd: int, images: dict[int, list[bytes]], pace_ms: float,
+                 verbose: bool = False):
         self.fd = fd
         self.images = images
         self.pace = pace_ms / 1000.0
+        self.verbose = verbose
+        self.progress = Progress({t: len(d) for t, d in images.items()}, NAMES, self.pace)
         self.buf = b""
-        self.t0 = time.time()
         self.served: set[int] = set()
         self.runs: dict[int, int] = {}
         self.pending: int | None = None
@@ -112,22 +115,28 @@ class Session:
         self.buf = b[i:]
 
     def handle(self, e) -> None:
-        t = time.time() - self.t0
         if e[0] == "cc":
             _, ch, num, val = e
-            print(f"[{t:7.1f}] dev CC #{num} = {val:#04x}")
+            self.progress.log(cc_text(num, val))
+            return
+        m = e[1]
+        raw = m.hex(" ").upper()
+        if len(m) >= 7 and m[5] == 0x7C:
+            self.pending = m[6]
+            what = f"dev requests {NAMES.get(m[6], f'component {m[6]}')}"
+        elif len(m) >= 7 and m[5] == 0x01 and m[6] == 0x7D:
+            self.saw_hello = True
+            self.model = m[4]
+            what = "dev bootloader handshake"
+        elif len(m) >= 8 and m[5] == 0x7D:
+            what = f"DEVICE ERROR {m[6]} (state {m[7]})"
+        elif len(m) >= 7 and m[5] == 0x01 and m[6] == 0x02 and self.model is not None:
+            wwrite(self.fd, bytes([0xF0, 0x00, 0x21, 0x07, self.model, 0x01, 0x04, 0x01, 0xF7]))
+            what = "dev asks to start again; start re-sent"
         else:
-            m = e[1]
-            print(f"[{t:7.1f}] dev {m.hex(' ').upper()}")
-            if len(m) >= 7 and m[5] == 0x7C:
-                self.pending = m[6]
-            elif len(m) >= 7 and m[5] == 0x01 and m[6] == 0x7D:
-                self.saw_hello = True
-                self.model = m[4]
-            elif len(m) >= 8 and m[5] == 0x7D:
-                print(f"        DEVICE ERROR {m[6]} (state {m[7]})")
-            elif len(m) >= 7 and m[5] == 0x01 and m[6] == 0x02 and self.model is not None:
-                wwrite(self.fd, bytes([0xF0, 0x00, 0x21, 0x07, self.model, 0x01, 0x04, 0x01, 0xF7]))
+            what = f"dev {raw}"
+            raw = ""
+        self.progress.log(f"{what}   [{raw}]" if self.verbose and raw else what)
 
     def pump(self, sec: float, stop_on_request: bool = True) -> None:
         end = time.time() + sec
@@ -135,6 +144,7 @@ class Session:
             if stop_on_request and self.pending is not None:
                 return
             r, _, _ = select.select([self.fd], [], [], 0.02)
+            self.progress.draw()
             if not r:
                 continue
             try:
@@ -146,17 +156,20 @@ class Session:
     def send_image(self, t: int) -> None:
         data = self.images[t]
         self.runs[t] = self.runs.get(t, 0) + 1
-        print(f"[{time.time()-self.t0:7.1f}] ==> sending {NAMES[t]} "
-              f"({len(data)} msgs @ {self.pace*1000:.0f} ms)")
-        for m in data:
+        again = f", attempt {self.runs[t]}" if self.runs[t] > 1 else ""
+        p = self.progress
+        p.log(f"==> sending {NAMES[t]} ({len(data)} msgs @ {self.pace*1000:.0f} ms{again})")
+        p.begin(t)
+        for i, m in enumerate(data, 1):
             wwrite(self.fd, m)
             time.sleep(self.pace)
-        print(f"[{time.time()-self.t0:7.1f}] <== {NAMES[t]} sent")
+            p.advance(i)
+        p.log(f"<== {NAMES[t]} sent in {fmt_secs(p.end())}")
         # brief listen; answer any request immediately (retry or next component)
         self.pump(0.30)
 
 
-def flash(src: str, pace_ms: float = 20.0, total: float = 600.0) -> int:
+def flash(src: str, pace_ms: float = 20.0, total: float = 600.0, verbose: bool = False) -> int:
     import os.path
     images: dict[int, list[bytes]] = {}
     for t, role in NAMES.items():
@@ -172,8 +185,8 @@ def flash(src: str, pace_ms: float = 20.0, total: float = 600.0) -> int:
     node = node_for(port)
     print(f"port {port} ({node})")
     fd = os.open(node, os.O_RDWR | os.O_NONBLOCK)
+    s = Session(fd, images, pace_ms, verbose)
     try:
-        s = Session(fd, images, pace_ms)
         for _ in range(5):                       # identify + confirm update mode
             wwrite(fd, IDENTIFY)
             s.pump(0.5)
@@ -188,7 +201,8 @@ def flash(src: str, pace_ms: float = 20.0, total: float = 600.0) -> int:
             sys.exit(f"the bootloader reports model {s.model:#04x} but the set in {src} is built "
                      f"for {', '.join(f'{x:#04x}' for x in sorted(set_models))}; refusing to flash. "
                      f"Use the patch file whose target matches this unit.")
-        print(f"device is in update mode (model {s.model:#04x})")
+        print(f"device is in update mode (model {s.model:#04x}); "
+              f"{sum(len(d) for d in images.values())} msgs to send")
         wwrite(fd, bytes([0xF0, 0x00, 0x21, 0x07, s.model, 0x01, 0x04, 0x01, 0xF7]))
         deadline = time.time() + total
         while time.time() < deadline and len(s.served) < len(images):
@@ -198,9 +212,12 @@ def flash(src: str, pace_ms: float = 20.0, total: float = 600.0) -> int:
                 s.pending = None
                 s.send_image(t)
                 s.served.add(t)
-        print(f"finished. served {sorted(s.served)} runs={s.runs}")
+        s.progress.close(keep=len(s.served) < len(images))
+        print(f"finished in {fmt_secs(time.time() - s.progress.t0)}. "
+              f"served {sorted(s.served)} runs={s.runs}")
         return 0 if len(s.served) == len(images) else 1
     finally:
+        s.progress.close()
         os.close(fd)
 
 
@@ -209,10 +226,13 @@ def main(argv=None) -> int:
         sys.stdout.reconfigure(line_buffering=True)
     ap = argparse.ArgumentParser(description="Flash a patched Modal set over USB-MIDI (Linux/ALSA)")
     ap.add_argument("--dir", required=True)
-    ap.add_argument("--pace-ms", type=float, default=20.0)
+    ap.add_argument("--pace-ms", type=float, default=20.0,
+                    help="ms between SysEx messages (default: %(default)g; do not go below 20)")
     ap.add_argument("--total", type=float, default=600.0)
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="also show the raw bytes of every device message")
     a = ap.parse_args(argv)
-    return flash(a.dir, a.pace_ms, a.total)
+    return flash(a.dir, a.pace_ms, a.total, a.verbose)
 
 
 if __name__ == "__main__":

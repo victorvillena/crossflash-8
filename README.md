@@ -111,15 +111,15 @@ verification, troubleshooting and recovery.
 3. **Flash over USB-MIDI:**
    ```bash
    # Linux (ALSA, no dependencies) — verified on hardware:
-   python3 -m crossflash8.flash_alsa --dir ./out --pace-ms 20
+   python3 -m crossflash8.flash_alsa --dir ./out
 
    # macOS / Windows (mido backend):
    pip install mido python-rtmidi
-   python3 -m crossflash8.flash_mido --dir ./out --pace-ms 20
+   python3 -m crossflash8.flash_mido --dir ./out
    ```
    Takes **~3½ minutes** total. The unit reboots itself automatically when all 3 components are written.
 
-To revert to stock at any time: put the synth into UPDATE mode (step 2) and serve your official unmodified files for the unit's own model (`python3 -m crossflash8.flash_alsa --dir /path/to/stock/syx --pace-ms 20`).
+To revert to stock at any time: put the synth into UPDATE mode (step 2) and serve your official unmodified files for the unit's own model (`python3 -m crossflash8.flash_alsa --dir /path/to/stock/syx`).
 
 ### Windows
 
